@@ -170,6 +170,9 @@ Size T3MarkdownTextShadowNode::measureContent(
 
         if (props.textAlign == T3MarkdownTextRunTextAlign::Left) {
           textAttributes.alignment = TextAlignment::Left;
+          // An explicit left alignment (code) also reads left to right, so the content
+          // direction pass leaves it alone.
+          textAttributes.baseWritingDirection = WritingDirection::LeftToRight;
         } else if (props.textAlign == T3MarkdownTextRunTextAlign::Right) {
           textAttributes.alignment = TextAlignment::Right;
         } else if (props.textAlign == T3MarkdownTextRunTextAlign::Center) {

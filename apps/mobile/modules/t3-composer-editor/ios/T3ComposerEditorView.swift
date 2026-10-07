@@ -1149,13 +1149,20 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
       if direction == .leftToRight && naturalIsLeftToRight {
         direction = .natural
       }
+      // Natural alignment resolves from the app's language, not the base writing
+      // direction, so pin it to the line's own leading edge.
+      let alignment: NSTextAlignment =
+        direction == .rightToLeft ? .right : direction == .leftToRight ? .left : .natural
       storage.enumerateAttribute(.paragraphStyle, in: enclosingRange) { value, range, _ in
         let existing = value as? NSParagraphStyle
-        guard (existing?.baseWritingDirection ?? .natural) != direction else {
+        guard (existing?.baseWritingDirection ?? .natural) != direction
+          || (existing?.alignment ?? .natural) != alignment
+        else {
           return
         }
         let style = existing?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
         style.baseWritingDirection = direction
+        style.alignment = alignment
         storage.addAttribute(.paragraphStyle, value: style, range: range)
       }
     }

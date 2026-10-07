@@ -37,17 +37,18 @@ static inline NSWritingDirection T3MarkdownTextContentDirection(NSString *string
   return NSWritingDirectionNatural;
 }
 
-/// Lays out each paragraph in its own script's direction. TextKit's natural alignment
-/// follows the app's language rather than the text, so without this an Arabic paragraph
-/// sits on the left in an English app. Paragraphs with an explicit left alignment, such as
-/// code, stay left to right whatever they contain.
+/// Lays out each paragraph in its own script's direction, the way HTML's `dir="auto"`
+/// does. React Native resolves natural alignment to the app's side (left in an English
+/// app) before this runs, so without it an Arabic paragraph sits on the left. Paragraphs
+/// that already carry a writing direction (an explicit `textAlign: "left"`, as code uses) and
+/// explicit center, justified, or opposite-side alignment are left alone.
 static inline void T3MarkdownTextApplyContentDirection(NSMutableAttributedString *attributedString)
 {
   NSString *string = attributedString.string;
-  // Natural alignment already reads left to right in a left-to-right app, so left-to-right
-  // prose keeps its style untouched there.
   const BOOL naturalIsLeftToRight =
       [NSParagraphStyle defaultWritingDirectionForLanguage:nil] == NSWritingDirectionLeftToRight;
+  const NSTextAlignment appSideAlignment =
+      naturalIsLeftToRight ? NSTextAlignmentLeft : NSTextAlignmentRight;
   [string enumerateSubstringsInRange:NSMakeRange(0, string.length)
                              options:NSStringEnumerationByParagraphs |
                                      NSStringEnumerationSubstringNotRequired
@@ -60,13 +61,15 @@ static inline void T3MarkdownTextApplyContentDirection(NSMutableAttributedString
                             atIndex:enclosingRange.location
                      effectiveRange:nil];
     const NSTextAlignment alignment = leadingStyle ? leadingStyle.alignment : NSTextAlignmentNatural;
-    const NSWritingDirection direction = alignment == NSTextAlignmentNatural
-        ? T3MarkdownTextContentDirection(string, paragraphRange)
-        : alignment == NSTextAlignmentLeft ? NSWritingDirectionLeftToRight
-                                           : NSWritingDirectionNatural;
+    if ((alignment != NSTextAlignmentNatural && alignment != appSideAlignment) ||
+        (leadingStyle && leadingStyle.baseWritingDirection != NSWritingDirectionNatural)) {
+      return;
+    }
+    const NSWritingDirection direction = T3MarkdownTextContentDirection(string, paragraphRange);
+    // Text that already reads in the app's direction keeps its style untouched.
     if (direction == NSWritingDirectionNatural ||
-        (direction == NSWritingDirectionLeftToRight && alignment == NSTextAlignmentNatural &&
-         naturalIsLeftToRight)) {
+        (direction == NSWritingDirectionLeftToRight && naturalIsLeftToRight) ||
+        (direction == NSWritingDirectionRightToLeft && !naturalIsLeftToRight)) {
       return;
     }
 
@@ -75,12 +78,20 @@ static inline void T3MarkdownTextApplyContentDirection(NSMutableAttributedString
                                  options:0
                               usingBlock:^(id value, NSRange range, BOOL *stop) {
       NSParagraphStyle *existingStyle = value;
-      if (existingStyle.baseWritingDirection == direction) {
+      const NSTextAlignment target = direction == NSWritingDirectionRightToLeft
+          ? NSTextAlignmentRight
+          : NSTextAlignmentLeft;
+      if (existingStyle.baseWritingDirection == direction && existingStyle.alignment == target) {
         return;
       }
       NSMutableParagraphStyle *paragraphStyle =
           existingStyle ? [existingStyle mutableCopy] : [NSMutableParagraphStyle new];
       paragraphStyle.baseWritingDirection = direction;
+      // Natural alignment resolves from the app's language, not the base writing
+      // direction, so pin it to the paragraph's own leading edge.
+      paragraphStyle.alignment = direction == NSWritingDirectionRightToLeft
+          ? NSTextAlignmentRight
+          : NSTextAlignmentLeft;
       if (direction == NSWritingDirectionRightToLeft) {
         // A left tab stop in a right-to-left paragraph pins list text to the marker; a
         // natural one measures from the leading (right) edge like the indents do.
