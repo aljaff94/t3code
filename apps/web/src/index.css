@@ -2092,13 +2092,13 @@ code {
   overflow-wrap: anywhere;
 }
 
-/* Right-to-left text. Paragraphs, headings, list items, and tables carry
-   dir="auto" (the composer gets it from Tiptap), so each lays out in its own
-   script's direction. dir="auto" skips descendants that set their own dir, so
+/* Right-to-left text. Paragraphs, headings, list items, and table cells
+   carry dir="auto" (the composer gets it from Tiptap), so each lays out in its
+   own script's direction. dir="auto" skips descendants that set their own dir, so
    an item wrapping a <p> (composer items, loose Markdown lists) cannot see its
    own text: its first paragraph decides instead. Lists and quotes take their
-   direction from their first item, which moves markers and borders to the
-   right for Arabic or Hebrew; the rtl rules come last so they win when an
+   direction from their first item and tables from their first header, which
+   moves markers, borders, and columns to the right for Arabic or Hebrew; the rtl rules come last so they win when an
    item falls back to ltr but its paragraph is rtl. An item in the other
    direction opens a marker gutter on its own side. */
 :is(.chat-markdown, .composer-tiptap)
@@ -2116,6 +2116,10 @@ code {
     > li:first-child > p:first-child:dir(rtl),
     > li:first-child > div > p:first-child:dir(rtl)
   ) {
+  direction: rtl;
+}
+
+.chat-markdown table:has(> thead > tr > th:first-child:dir(rtl)) {
   direction: rtl;
 }
 

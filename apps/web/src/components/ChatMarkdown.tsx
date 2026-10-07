@@ -891,7 +891,7 @@ function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
       data-expanded={expanded ? "true" : "false"}
     >
       <ScrollArea radius="none" chainVerticalScroll scrollFade className="w-full max-w-full">
-        <table ref={tableRef} dir="auto" {...props}>
+        <table ref={tableRef} {...props}>
           {children}
         </table>
       </ScrollArea>
@@ -3513,6 +3513,13 @@ const CHAT_MARKDOWN_COMPONENTS = {
   },
   table: function MarkdownTableRenderer({ node: _node, ...props }) {
     return <MarkdownTable {...props} />;
+  },
+  // Cells follow their own text; the stylesheet orders columns by the first header.
+  th: function MarkdownTableHeader({ node: _node, ...props }) {
+    return <th dir="auto" {...props} />;
+  },
+  td: function MarkdownTableCell({ node: _node, ...props }) {
+    return <td dir="auto" {...props} />;
   },
   details: function MarkdownDetailsRenderer({ node: _node, children, open: detailsOpen }) {
     return <MarkdownDetails open={detailsOpen}>{children}</MarkdownDetails>;
