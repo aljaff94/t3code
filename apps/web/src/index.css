@@ -2029,63 +2029,103 @@ code {
 
 /* Right-to-left text. Paragraphs, headings, list items, and table cells
    carry dir="auto" (the composer gets it from Tiptap), so each lays out in its
-   own script's direction. dir="auto" skips descendants that set their own dir, so
-   an item wrapping a <p> (composer tasks, loose Markdown lists) cannot see its
-   own text: its first paragraph decides instead. Lists and quotes take their
-   direction from their first item and tables from their first header, which
-   moves markers, borders, and columns to the right for Arabic or Hebrew; the rtl rules come last so they win when an
-   item falls back to ltr but its paragraph is rtl. An item in the other
-   direction opens a marker gutter on its own side (composer task lists have
-   no marker gutter to open). */
+   own script's direction. dir="auto" skips descendants that set their own dir,
+   so an item wrapping a <p> (composer tasks, loose Markdown lists) cannot see
+   its own text and may inherit a direction instead: when that paragraph
+   exists, it decides. Lists take their direction from their first item,
+   quotes from their first block, alerts from their body, and tables from
+   their first header, which moves markers, borders, and columns to the right
+   for Arabic or Hebrew. Each ltr/rtl pair below is mutually exclusive. */
 :is(.chat-markdown, .composer-tiptap)
-  :is(ul, ol, blockquote):has(
-    > :first-child:dir(ltr),
-    > li:first-child > p:first-child:dir(ltr),
-    > li:first-child > div > p:first-child:dir(ltr)
+  li:is(
+    :has(> p:first-child:dir(rtl), > div > p:first-child:dir(rtl)),
+    :dir(rtl):not(:has(> p:first-child:dir(ltr), > div > p:first-child:dir(ltr)))
+  ) {
+  direction: rtl;
+}
+
+:is(.chat-markdown, .composer-tiptap)
+  li:is(
+    :has(> p:first-child:dir(ltr), > div > p:first-child:dir(ltr)),
+    :dir(ltr):not(:has(> p:first-child:dir(rtl), > div > p:first-child:dir(rtl)))
   ) {
   direction: ltr;
 }
 
 :is(.chat-markdown, .composer-tiptap)
-  :is(ul, ol, blockquote):has(
-    > :first-child:dir(rtl),
-    > li:first-child > p:first-child:dir(rtl),
-    > li:first-child > div > p:first-child:dir(rtl)
+  :is(ul, ol):is(
+    :has(
+      > li:first-child > p:first-child:dir(rtl),
+      > li:first-child > div > p:first-child:dir(rtl)
+    ),
+    :has(> li:first-child:dir(rtl)):not(
+      :has(
+        > li:first-child > p:first-child:dir(ltr),
+        > li:first-child > div > p:first-child:dir(ltr)
+      )
+    )
   ) {
   direction: rtl;
 }
 
+:is(.chat-markdown, .composer-tiptap)
+  :is(ul, ol):is(
+    :has(
+      > li:first-child > p:first-child:dir(ltr),
+      > li:first-child > div > p:first-child:dir(ltr)
+    ),
+    :has(> li:first-child:dir(ltr)):not(
+      :has(
+        > li:first-child > p:first-child:dir(rtl),
+        > li:first-child > div > p:first-child:dir(rtl)
+      )
+    )
+  ) {
+  direction: ltr;
+}
+
+.chat-markdown blockquote:has(> :first-child:dir(rtl)),
+.chat-markdown [role="note"]:has(> :nth-child(2):dir(rtl)),
 .chat-markdown table:has(> thead > tr > th:first-child:dir(rtl)) {
   direction: rtl;
 }
 
+/* An item in the other direction from its list opens a marker gutter on its
+   own side; composer task lists have no marker gutter to open. */
 :is(.chat-markdown, .composer-tiptap)
-  li:has(> p:first-child:dir(ltr), > div > p:first-child:dir(ltr)) {
-  direction: ltr;
-}
-
-:is(.chat-markdown, .composer-tiptap)
-  li:has(> p:first-child:dir(rtl), > div > p:first-child:dir(rtl)) {
-  direction: rtl;
-}
-
+  :is(ul:not([data-type="taskList"]), ol):is(
+    :has(
+      > li:first-child > p:first-child:dir(rtl),
+      > li:first-child > div > p:first-child:dir(rtl)
+    ),
+    :has(> li:first-child:dir(rtl)):not(
+      :has(
+        > li:first-child > p:first-child:dir(ltr),
+        > li:first-child > div > p:first-child:dir(ltr)
+      )
+    )
+  )
+  > li:is(
+    :has(> p:first-child:dir(ltr), > div > p:first-child:dir(ltr)),
+    :dir(ltr):not(:has(> p:first-child:dir(rtl), > div > p:first-child:dir(rtl)))
+  ),
 :is(.chat-markdown, .composer-tiptap)
   :is(ul:not([data-type="taskList"]), ol):not(
     :has(
-      > :first-child:dir(rtl),
       > li:first-child > p:first-child:dir(rtl),
       > li:first-child > div > p:first-child:dir(rtl)
+    ),
+    :has(> li:first-child:dir(rtl)):not(
+      :has(
+        > li:first-child > p:first-child:dir(ltr),
+        > li:first-child > div > p:first-child:dir(ltr)
+      )
     )
   )
-  > li:is(:dir(rtl), :has(> p:first-child:dir(rtl), > div > p:first-child:dir(rtl))),
-:is(.chat-markdown, .composer-tiptap)
-  :is(ul:not([data-type="taskList"]), ol):has(
-    > :first-child:dir(rtl),
-    > li:first-child > p:first-child:dir(rtl),
-    > li:first-child > div > p:first-child:dir(rtl)
-  )
-  > li:not(:dir(rtl), :has(> p:first-child:dir(rtl), > div > p:first-child:dir(rtl))) {
-  /* The list's gutter is on the other side, so the item opens its own. */
+  > li:is(
+    :has(> p:first-child:dir(rtl), > div > p:first-child:dir(rtl)),
+    :dir(rtl):not(:has(> p:first-child:dir(ltr), > div > p:first-child:dir(ltr)))
+  ) {
   margin-inline-start: var(--list-gutter, 1.25rem);
 }
 
