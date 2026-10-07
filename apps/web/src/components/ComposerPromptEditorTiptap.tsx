@@ -872,6 +872,9 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         { styling: richText },
       ),
       editable: !disabled,
+      // dir="auto" on every block, so each line lays out in its own script's
+      // direction (Arabic and Hebrew lines align right, code stays left).
+      textDirection: "auto",
       editorProps: {
         attributes: editorAttributes,
         handleKeyDown: (view, event) => {
