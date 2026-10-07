@@ -4410,7 +4410,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // ------------------------------------------------------------------
   // Callbacks: command key
   // ------------------------------------------------------------------
-  const onComposerCommandKey = (key: string, event: KeyboardEvent, isTaskItem = false) => {
+  const onComposerCommandKey = (key: string, event: KeyboardEvent, isListItem = false) => {
     const submissionIntent = composerSubmissionIntentForKey({
       event,
       keybindings,
@@ -4464,8 +4464,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       );
       return true;
     }
-    // Native task splitting preserves marks and chips on both sides of the caret.
-    if (key === "Enter" && isTaskItem) return false;
+    // Native list splitting preserves marks and chips on both sides of the caret.
+    if (key === "Enter" && isListItem) return false;
     if (!event.isComposing && (key === "Enter" || (key === "Tab" && !event.shiftKey))) {
       const selection = composerEditorRef.current?.readSelectionRange();
       const snapshot = readComposerSnapshot();

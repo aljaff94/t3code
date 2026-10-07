@@ -1,3 +1,4 @@
+import { Extension } from "@tiptap/core";
 import { Mark, type Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { EditorState, Transaction } from "@tiptap/pm/state";
 import { Code } from "@tiptap/extension-code";
@@ -71,6 +72,33 @@ export const ComposerTaskItemExtension = TaskItem.extend({
   },
 }).configure({ nested: true });
 
+/**
+ * Bullet and ordered list items keep their source layout the same way task
+ * items do. The bullet character and the ordered delimiter live on the list
+ * (a different one starts a new list, as in CommonMark). Ordered items keep
+ * their literal number so lazy `1. 1. 1.` numbering round-trips; an item
+ * split off with Enter has none and counts on from the previous sibling.
+ */
+export const ComposerListAttributesExtension = Extension.create({
+  name: "composer-list-attributes",
+  addGlobalAttributes() {
+    return [
+      {
+        types: ["listItem"],
+        attributes: {
+          indent: { default: "", rendered: false },
+          markerSpace: { default: " ", rendered: false },
+          number: { default: null, rendered: false, keepOnSplit: false },
+        },
+      },
+      { types: ["bulletList"], attributes: { bullet: { default: "-", rendered: false } } },
+      { types: ["orderedList"], attributes: { delimiter: { default: ".", rendered: false } } },
+    ];
+  },
+});
+
+const LIST_NODE_NAMES = new Set(["taskList", "bulletList", "orderedList"]);
+
 function randomNodeKey(): string {
   return `tiptap-${Math.random().toString(36).slice(2)}`;
 }
@@ -98,10 +126,41 @@ function parseTaskPrefix(head: string): { prefix: TaskLinePrefix; markerLength: 
   };
 }
 
+type ListLinePrefix =
+  | ({ kind: "task" } & TaskLinePrefix)
+  | { kind: "bullet"; indent: string; bullet: string; markerSpace: string }
+  | { kind: "ordered"; indent: string; number: string; delimiter: string; markerSpace: string };
+
+function parseListPrefix(head: string): { prefix: ListLinePrefix; markerLength: number } | null {
+  const task = parseTaskPrefix(head);
+  if (task) return { prefix: { kind: "task", ...task.prefix }, markerLength: task.markerLength };
+  const bullet = head.match(/^([ \t]*)([-*+])([ \t]+)/);
+  if (bullet) {
+    return {
+      prefix: { kind: "bullet", indent: bullet[1]!, bullet: bullet[2]!, markerSpace: bullet[3]! },
+      markerLength: bullet[0].length,
+    };
+  }
+  const ordered = head.match(/^([ \t]*)(\d{1,9})([.)])([ \t]+)/);
+  if (ordered) {
+    return {
+      prefix: {
+        kind: "ordered",
+        indent: ordered[1]!,
+        number: ordered[2]!,
+        delimiter: ordered[3]!,
+        markerSpace: ordered[4]!,
+      },
+      markerLength: ordered[0].length,
+    };
+  }
+  return null;
+}
+
 type InlineJson = Record<string, unknown>;
 
 interface DocLine {
-  task: TaskLinePrefix | null;
+  list: ListLinePrefix | null;
   inline: InlineJson[];
 }
 
@@ -143,27 +202,70 @@ function atomJsonForSegment(
   };
 }
 
-interface PendingTaskItem extends TaskLinePrefix {
+interface PendingListItem {
+  prefix: ListLinePrefix;
   content: InlineJson[];
-  children: PendingTaskItem[];
+  children: PendingList[];
 }
 
-function taskListJson(items: PendingTaskItem[]): InlineJson {
-  return {
-    type: "taskList",
-    content: items.map((item) => ({
+interface PendingList {
+  /** The first item's prefix decides the list's kind and marker. */
+  prefix: ListLinePrefix;
+  items: PendingListItem[];
+}
+
+function continuesList(list: PendingList, prefix: ListLinePrefix): boolean {
+  const first = list.prefix;
+  if (first.kind === "bullet") return prefix.kind === "bullet" && prefix.bullet === first.bullet;
+  if (first.kind === "ordered") {
+    return prefix.kind === "ordered" && prefix.delimiter === first.delimiter;
+  }
+  return prefix.kind === "task";
+}
+
+function appendListItem(lists: PendingList[], item: PendingListItem): void {
+  const last = lists[lists.length - 1];
+  if (last && continuesList(last, item.prefix)) last.items.push(item);
+  else lists.push({ prefix: item.prefix, items: [item] });
+}
+
+function listItemJson(item: PendingListItem): InlineJson {
+  const { prefix } = item;
+  const content = [{ type: "paragraph", content: item.content }, ...item.children.map(listJson)];
+  if (prefix.kind === "task") {
+    return {
       type: "taskItem",
       attrs: {
-        checked: item.checked,
-        indent: item.indent,
-        markerSpace: item.markerSpace,
-        contentSpace: item.contentSpace,
+        checked: prefix.checked,
+        indent: prefix.indent,
+        markerSpace: prefix.markerSpace,
+        contentSpace: prefix.contentSpace,
       },
-      content: [
-        { type: "paragraph", content: item.content },
-        ...(item.children.length > 0 ? [taskListJson(item.children)] : []),
-      ],
-    })),
+      content,
+    };
+  }
+  return {
+    type: "listItem",
+    attrs: {
+      indent: prefix.indent,
+      markerSpace: prefix.markerSpace,
+      number: prefix.kind === "ordered" ? prefix.number : null,
+    },
+    content,
+  };
+}
+
+function listJson(list: PendingList): InlineJson {
+  const { prefix } = list;
+  const content = list.items.map(listItemJson);
+  if (prefix.kind === "task") return { type: "taskList", content };
+  if (prefix.kind === "bullet") {
+    return { type: "bulletList", attrs: { bullet: prefix.bullet }, content };
+  }
+  return {
+    type: "orderedList",
+    attrs: { start: Number(prefix.number), delimiter: prefix.delimiter },
+    content,
   };
 }
 
@@ -199,7 +301,7 @@ export function buildTiptapContent(
     .join("");
   let atomIndex = 0;
   const lines: DocLine[] = text.split("\n").map((line) => {
-    const parsed = styling ? parseTaskPrefix(line) : null;
+    const parsed = styling ? parseListPrefix(line) : null;
     const content = parsed ? line.slice(parsed.markerLength) : line;
     const spans = styling ? parseInlineMarkdown(content) : [{ text: content, marks: [] }];
     const inline: InlineJson[] = [];
@@ -212,61 +314,58 @@ export function buildTiptapContent(
         if (piece) inline.push(textJsonForSpan(piece, span.marks));
       });
     }
-    return { task: parsed?.prefix ?? null, inline };
+    return { list: parsed?.prefix ?? null, inline };
   });
 
-  // Pass 2: consecutive task lines group into (possibly nested) task lists
-  // by indent prefix; everything else stays a paragraph.
+  // Pass 2: consecutive list lines group into (possibly nested) lists by
+  // indent prefix; everything else stays a paragraph.
   const blocks: Record<string, unknown>[] = [];
-  let stack: { indent: string; items: PendingTaskItem[] }[] = [];
-  const flushTasks = () => {
+  let stack: { indent: string; lists: PendingList[] }[] = [];
+  const flushLists = () => {
     if (stack.length > 0) {
-      blocks.push(taskListJson(stack[0]!.items));
+      blocks.push(...stack[0]!.lists.map(listJson));
       stack = [];
     }
   };
   for (const line of lines) {
-    if (!line.task) {
-      flushTasks();
+    if (!line.list) {
+      flushLists();
       blocks.push({ type: "paragraph", content: line.inline });
       continue;
     }
-    const item: PendingTaskItem = {
-      ...line.task,
-      content: line.inline,
-      children: [],
-    };
+    const item: PendingListItem = { prefix: line.list, content: line.inline, children: [] };
+    const indent = item.prefix.indent;
     for (;;) {
       const top = stack[stack.length - 1];
       if (!top) {
         // A leading indented item with no parent flattens but keeps indent.
-        stack.push({ indent: item.indent, items: [] });
+        stack.push({ indent, lists: [] });
         continue;
       }
-      if (top.indent === item.indent) {
-        top.items.push(item);
+      if (top.indent === indent) {
+        appendListItem(top.lists, item);
         break;
       }
-      if (top.indent !== "" && !item.indent.startsWith(top.indent)) {
+      if (top.indent !== "" && !indent.startsWith(top.indent)) {
         if (stack.length > 1) {
           stack.pop();
           continue;
         }
-        top.indent = item.indent;
-        top.items.push(item);
+        top.indent = indent;
+        appendListItem(top.lists, item);
         break;
       }
-      const parent = top.items[top.items.length - 1];
+      const parent = top.lists.at(-1)?.items.at(-1);
       if (!parent) {
-        top.items.push(item);
+        appendListItem(top.lists, item);
         break;
       }
-      parent.children.push(item);
-      stack.push({ indent: item.indent, items: parent.children });
+      appendListItem(parent.children, item);
+      stack.push({ indent, lists: parent.children });
       break;
     }
   }
-  flushTasks();
+  flushLists();
   return blocks;
 }
 
@@ -495,28 +594,101 @@ function appendInlineRuns(
   }
 }
 
-function walkTaskList(list: ProseMirrorNode, listStart: number, acc: RichAccumulator): void {
-  let itemPos = listStart + 1;
-  let firstItem = true;
-  list.content.forEach((item) => {
-    // Sibling items are separated by one newline in every coordinate space.
-    if (!firstItem) pushBreakRun(acc);
-    firstItem = false;
-    const itemContentStart = itemPos + 1;
-    const first = item.firstChild;
-    const empty = first?.type.name === "paragraph" && first.content.childCount === 0;
-    const attrs = item.attrs as Record<string, unknown>;
-    const indent = typeof attrs.indent === "string" ? attrs.indent : "";
-    const markerSpace = typeof attrs.markerSpace === "string" ? attrs.markerSpace : " ";
+interface ListWalk {
+  /** Normalized indent of the enclosing item; null at the top level. */
+  parentIndent: string | null;
+  /** Normalized indent of the previous item in the same container. */
+  previousIndent: string | null;
+}
+
+/**
+ * Indent for an item, corrected so the parser reads the same structure back.
+ * Native list commands (Enter splitting a nested item, Shift+Tab lifting one)
+ * move items without touching their stored indent.
+ */
+function normalizedItemIndent(stored: string, walk: ListWalk): string {
+  const { parentIndent, previousIndent } = walk;
+  if (parentIndent !== null) {
+    // Nested siblings share one indent, which must extend the parent's.
+    if (previousIndent !== null) return previousIndent;
+    return stored !== parentIndent && stored.startsWith(parentIndent)
+      ? stored
+      : `${parentIndent}  `;
+  }
+  // A top-level item indented past the previous one would nest under it.
+  if (previousIndent !== null && stored !== previousIndent && stored.startsWith(previousIndent)) {
+    return previousIndent;
+  }
+  return stored;
+}
+
+function listItemPrefix(
+  list: ProseMirrorNode,
+  item: ProseMirrorNode,
+  indent: string,
+  previousNumber: number | null,
+): { prefix: string; number: number | null } {
+  const attrs = item.attrs as Record<string, unknown>;
+  const first = item.firstChild;
+  const empty = first?.type.name === "paragraph" && first.content.childCount === 0;
+  const markerSpace =
+    typeof attrs.markerSpace === "string" && attrs.markerSpace ? attrs.markerSpace : " ";
+  if (item.type.name === "taskItem") {
     const contentSpace =
       typeof attrs.contentSpace === "string"
         ? attrs.contentSpace || (empty ? "" : " ")
         : empty
           ? ""
           : " ";
-    const prefix = `${indent}-${markerSpace}[${attrs.checked === true ? "x" : " "}]${contentSpace}`;
-    // The checkbox owns no document characters; every prefix offset clamps
-    // to the start of the item text, exactly like style markers.
+    const checkbox = `[${attrs.checked === true ? "x" : " "}]`;
+    return { prefix: `${indent}-${markerSpace}${checkbox}${contentSpace}`, number: null };
+  }
+  const listAttrs = list.attrs as Record<string, unknown>;
+  if (list.type.name === "orderedList") {
+    const delimiter = listAttrs.delimiter === ")" ? ")" : ".";
+    if (typeof attrs.number === "string") {
+      return {
+        prefix: `${indent}${attrs.number}${delimiter}${markerSpace}`,
+        number: Number(attrs.number),
+      };
+    }
+    const start = typeof listAttrs.start === "number" ? listAttrs.start : 1;
+    const number = previousNumber === null ? start : previousNumber + 1;
+    return { prefix: `${indent}${number}${delimiter}${markerSpace}`, number };
+  }
+  const bullet = typeof listAttrs.bullet === "string" ? listAttrs.bullet : "-";
+  return { prefix: `${indent}${bullet}${markerSpace}`, number: null };
+}
+
+/** Serializes one list and returns the last item's indent. */
+function walkList(
+  list: ProseMirrorNode,
+  listStart: number,
+  acc: RichAccumulator,
+  walk: ListWalk,
+): string | null {
+  let itemPos = listStart + 1;
+  let firstItem = true;
+  let previousIndent = walk.previousIndent;
+  let previousNumber: number | null = null;
+  list.content.forEach((item) => {
+    // Sibling items are separated by one newline in every coordinate space.
+    if (!firstItem) pushBreakRun(acc);
+    firstItem = false;
+    const itemContentStart = itemPos + 1;
+    const storedIndent =
+      typeof (item.attrs as Record<string, unknown>).indent === "string"
+        ? ((item.attrs as Record<string, unknown>).indent as string)
+        : "";
+    const indent = normalizedItemIndent(storedIndent, {
+      parentIndent: walk.parentIndent,
+      previousIndent,
+    });
+    previousIndent = indent;
+    const { prefix, number } = listItemPrefix(list, item, indent, previousNumber);
+    previousNumber = number;
+    // The marker owns no document characters; every prefix offset clamps to
+    // the start of the item text, exactly like style markers.
     acc.runs.push({
       kind: "prefix",
       flatStart: acc.flat,
@@ -534,11 +706,15 @@ function walkTaskList(list: ProseMirrorNode, listStart: number, acc: RichAccumul
     acc.md += prefix.length;
     let childPos = itemContentStart;
     let firstBlock = true;
+    let childIndent: string | null = null;
     item.content.forEach((child) => {
       if (!firstBlock) pushBreakRun(acc);
       firstBlock = false;
-      if (child.type.name === "taskList") {
-        walkTaskList(child, childPos, acc);
+      if (LIST_NODE_NAMES.has(child.type.name)) {
+        childIndent = walkList(child, childPos, acc, {
+          parentIndent: indent,
+          previousIndent: childIndent,
+        });
       } else if (child.type.name === "paragraph") {
         appendInlineRuns(child, childPos + 1, acc);
       }
@@ -546,6 +722,7 @@ function walkTaskList(list: ProseMirrorNode, listStart: number, acc: RichAccumul
     });
     itemPos += item.nodeSize;
   });
+  return previousIndent;
 }
 
 export function serializeEditorDoc(doc: ProseMirrorNode): RichDocMap {
@@ -556,11 +733,13 @@ export function serializeEditorDoc(doc: ProseMirrorNode): RichDocMap {
   });
 
   let pmBlockStart = 0;
+  let previousIndent: string | null = null;
   blocks.forEach((block, blockIndex) => {
     if (blockIndex > 0) pushBreakRun(acc);
-    if (block.type.name === "taskList") {
-      walkTaskList(block, pmBlockStart, acc);
+    if (LIST_NODE_NAMES.has(block.type.name)) {
+      previousIndent = walkList(block, pmBlockStart, acc, { parentIndent: null, previousIndent });
     } else if (block.type.name === "paragraph") {
+      previousIndent = null;
       appendInlineRuns(block, pmBlockStart + 1, acc);
     }
     pmBlockStart += block.nodeSize;

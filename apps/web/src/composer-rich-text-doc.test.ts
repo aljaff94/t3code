@@ -10,6 +10,7 @@ import {
   caretTakesMarksBefore,
   collapsedToFlat,
   ComposerCodeExtension,
+  ComposerListAttributesExtension,
   ComposerTaskItemExtension,
   flatToCollapsed,
   flatToMarkdown,
@@ -33,18 +34,16 @@ const schema = getSchemaByResolvedExtensions(
   resolveExtensions([
     StarterKit.configure({
       blockquote: false,
-      bulletList: false,
       codeBlock: false,
       heading: false,
       horizontalRule: false,
-      listItem: false,
-      orderedList: false,
       dropcursor: false,
       gapcursor: false,
       trailingNode: false,
       code: false,
     }),
     ComposerCodeExtension,
+    ComposerListAttributesExtension,
     stubAtom("composer-mention", { path: { default: "" }, source: { default: "" } }),
     stubAtom("composer-skill", {
       skillName: { default: "" },
@@ -175,6 +174,21 @@ describe("composer rich text document model", () => {
     "snake_case stays literal",
     "unmatched ** stays literal",
     "**bold** then @README.md then *italic*",
+    "- bullet",
+    "* star\n* bullets",
+    "+   wide  marker space",
+    "- \n- ",
+    "- a\n* b\n+ c",
+    "1. one\n1. lazy\n1. numbering",
+    "3) three\n7) seven",
+    "007. padded",
+    "- parent\n  - child\n    - grandchild\n- uncle",
+    "1. step\n   - detail\n   - [ ] todo\n2. next",
+    "- [ ] task\n- bullet\n1. ordered",
+    "para\n- **bold** item with @README.md\npara",
+    "  - leading indent\n - dedent\n  - child",
+    "* * *",
+    "2024. was a year",
   ])("round-trips %s through a real ProseMirror document", (value) => {
     expect(roundTrip(value).value).toBe(value);
   });
@@ -187,6 +201,8 @@ describe("composer rich text document model", () => {
     "- [ ] parent\n  - [ ] child\n- [ ]",
     "para\n- [ ] task\npara",
     "**before @README.md after**",
+    "- \n- next\n",
+    "1. step\n   - detail\n2. next",
   ])("maps editable positions in %s", (value) => {
     const doc = ProseMirrorNode.fromJSON(
       schema,
@@ -222,6 +238,72 @@ describe("composer rich text document model", () => {
     expect(list.childCount).toBe(2);
     expect(list.child(0).childCount).toBe(1);
     expect(list.child(1).child(1).firstChild!.textContent).toBe("child");
+  });
+
+  it("groups list lines into nested bullet, ordered, and task lists", () => {
+    const doc = ProseMirrorNode.fromJSON(
+      schema,
+      buildDocJson("1. step\n   - detail\n   - [ ] todo\n2. next\n- after", (name) => ({
+        label: name,
+        description: null,
+      })),
+    );
+    expect(doc.childCount).toBe(2);
+    const ordered = doc.child(0);
+    expect(ordered.type.name).toBe("orderedList");
+    expect(ordered.childCount).toBe(2);
+    const nested = ordered.child(0);
+    expect(nested.childCount).toBe(3);
+    expect(nested.child(1).type.name).toBe("bulletList");
+    expect(nested.child(2).type.name).toBe("taskList");
+    expect(doc.child(1).type.name).toBe("bulletList");
+  });
+
+  it("starts a new list when the bullet character changes", () => {
+    const doc = ProseMirrorNode.fromJSON(
+      schema,
+      buildDocJson("- a\n* b", (name) => ({ label: name, description: null })),
+    );
+    expect(doc.childCount).toBe(2);
+    expect(doc.child(1).attrs.bullet).toBe("*");
+  });
+
+  it("numbers items split off an ordered list from the previous sibling", () => {
+    const listItem = (text: string, attrs: Record<string, unknown>) =>
+      schema.node("listItem", attrs, [schema.node("paragraph", null, [schema.text(text)])]);
+    const doc = schema.node("doc", null, [
+      schema.node("orderedList", { start: 3, delimiter: ")" }, [
+        listItem("first", { number: null }),
+        listItem("second", { number: null }),
+        listItem("kept", { number: "9" }),
+        listItem("after", { number: null }),
+      ]),
+    ]);
+    expect(serializeEditorDoc(doc).value).toBe("3) first\n4) second\n9) kept\n10) after");
+  });
+
+  it("re-derives indents for items that native list commands moved", () => {
+    const listItem = (text: string, indent: string, children: ProseMirrorNode[] = []) =>
+      schema.node("listItem", { indent }, [
+        schema.node("paragraph", null, [schema.text(text)]),
+        ...children,
+      ]);
+    // Tab sank "child" without changing its stored indent; Shift+Tab lifted
+    // "lifted" out of a nested list and kept the nested indent.
+    const doc = schema.node("doc", null, [
+      schema.node("bulletList", null, [
+        listItem("parent", "", [schema.node("bulletList", null, [listItem("child", "")])]),
+        listItem("lifted", "  "),
+      ]),
+    ]);
+    const serialized = serializeEditorDoc(doc).value;
+    expect(serialized).toBe("- parent\n  - child\n- lifted");
+    const rebuilt = ProseMirrorNode.fromJSON(
+      schema,
+      buildDocJson(serialized, (name) => ({ label: name, description: null })),
+    );
+    expect(rebuilt.firstChild!.childCount).toBe(2);
+    expect(rebuilt.firstChild!.child(0).child(1).type.name).toBe("bulletList");
   });
 
   it("applies a shared mark to text on both sides of a chip", () => {
@@ -337,6 +419,8 @@ describe("composer rich text document model", () => {
     "struck ~~out~~ stays literal",
     "- [ ] stays a paragraph",
     "- [x] stays a paragraph",
+    "- bullets stay a paragraph",
+    "1. numbers stay a paragraph",
     "line one\nline two",
     "@README.md explain this",
     "**bold** then @README.md then *italic*",

@@ -1,8 +1,15 @@
-import { Extension, Node, wrappingInputRule, type JSONContent } from "@tiptap/core";
+import {
+  Extension,
+  InputRule,
+  Node,
+  wrappingInputRule,
+  type JSONContent,
+  type Range as TiptapRange,
+} from "@tiptap/core";
 import { TaskList } from "@tiptap/extension-task-list";
 import { ReactNodeViewRenderer, NodeViewWrapper, type NodeViewProps } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import { type Node as ProseMirrorNode } from "@tiptap/pm/model";
+import { Fragment, type Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { splitBlockKeepMarks } from "@tiptap/pm/commands";
 import { type EditorState, Plugin, PluginKey, TextSelection } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
@@ -49,6 +56,7 @@ import {
   collapsedToFlat,
   caretTakesMarksBefore,
   ComposerCodeExtension,
+  ComposerListAttributesExtension,
   ComposerTaskItemExtension,
   flatToCollapsed,
   flatToMarkdown,
@@ -145,7 +153,7 @@ export interface ComposerPromptEditorProps {
     contextIds: string[],
   ) => void;
   onVisibleSelectionChange?: () => void;
-  onCommandKeyDown?: (key: string, event: KeyboardEvent, isTaskItem?: boolean) => boolean;
+  onCommandKeyDown?: (key: string, event: KeyboardEvent, isListItem?: boolean) => boolean;
   onPageScrollKeyDown?: (key: "PageUp" | "PageDown") => void;
   onPageScrollKeyUp?: (key: string) => void;
   onPageScrollRelease?: () => void;
@@ -577,6 +585,93 @@ const ComposerMarkersExtension = Extension.create({
   },
 });
 
+/**
+ * `[ ] ` typed at the start of a bullet item turns that item into a task. The
+ * bullet rule already consumed the `- ` the task rule would otherwise see, so
+ * the item is moved into a task list of its own, splitting the bullet list
+ * around it.
+ */
+function convertBulletItemToTask(
+  state: EditorState,
+  range: TiptapRange,
+  match: RegExpMatchArray,
+): void | null {
+  const { taskList, taskItem } = state.schema.nodes;
+  const $from = state.doc.resolve(range.from);
+  const itemDepth = $from.depth - 1;
+  if (!taskList || !taskItem || itemDepth < 1) return null;
+  const item = $from.node(itemDepth);
+  const list = $from.node(itemDepth - 1);
+  if (
+    item.type.name !== "listItem" ||
+    list.type.name !== "bulletList" ||
+    $from.index(itemDepth) !== 0 ||
+    range.from !== $from.start()
+  ) {
+    return null;
+  }
+  const { tr } = state;
+  tr.delete(range.from, range.to);
+  const listPos = $from.before(itemDepth - 1);
+  const itemIndex = $from.index(itemDepth - 1);
+  const updatedList = tr.doc.nodeAt(listPos)!;
+  const updatedItem = updatedList.child(itemIndex);
+  const before: ProseMirrorNode[] = [];
+  const after: ProseMirrorNode[] = [];
+  updatedList.forEach((child, _offset, index) => {
+    if (index < itemIndex) before.push(child);
+    else if (index > itemIndex) after.push(child);
+  });
+  const task = taskItem.create(
+    {
+      checked: match[1]?.toLowerCase() === "x",
+      indent: updatedItem.attrs.indent,
+      markerSpace: updatedItem.attrs.markerSpace,
+    },
+    updatedItem.content,
+  );
+  const replacement = [
+    ...(before.length > 0 ? [updatedList.copy(Fragment.from(before))] : []),
+    taskList.create(null, task),
+    ...(after.length > 0 ? [updatedList.copy(Fragment.from(after))] : []),
+  ];
+  tr.replaceWith(listPos, listPos + updatedList.nodeSize, replacement);
+  // taskList > taskItem > paragraph: three opening positions past the list start.
+  const beforeSize = before.length > 0 ? replacement[0]!.nodeSize : 0;
+  tr.setSelection(TextSelection.create(tr.doc, listPos + beforeSize + 3));
+}
+
+const ComposerListInputRulesExtension = Extension.create({
+  name: "composer-list-input-rules",
+  // Ahead of StarterKit's bullet rule, which does not record the bullet typed.
+  priority: 1000,
+  addInputRules() {
+    const { bulletList } = this.editor.schema.nodes;
+    if (!bulletList) return [];
+    return [
+      wrappingInputRule({
+        find: /^\s*([-+*])\s$/,
+        type: bulletList,
+        getAttributes: (match) => ({ bullet: match[1] }),
+      }),
+      new InputRule({
+        find: /^\[([ xX])\] $/,
+        handler: ({ state, range, match }) => convertBulletItemToTask(state, range, match),
+      }),
+    ];
+  },
+});
+
+/** The innermost list item around the selection, for Enter to split. */
+function activeListItemType(state: EditorState): "taskItem" | "listItem" | null {
+  const { $from } = state.selection;
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const name = $from.node(depth).type.name;
+    if (name === "taskItem" || name === "listItem") return name;
+  }
+  return null;
+}
+
 // Document model (markdown ⇄ ProseMirror) lives in ~/composer-rich-text-doc so
 // unit tests can round-trip it without a browser.
 // ── Editor component ───────────────────────────────────────────────────────
@@ -812,21 +907,27 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
       extensions: [
         StarterKit.configure({
           blockquote: false,
-          bulletList: false,
           codeBlock: false,
           heading: false,
           horizontalRule: false,
-          listItem: false,
           link: false,
-          orderedList: false,
           underline: false,
           dropcursor: false,
           gapcursor: false,
           trailingNode: false,
           code: false,
           undoRedo: { newGroupDelay: COMPOSER_UNDO_GROUP_DELAY },
-          // Plain mode has no marks: typed markers stay literal characters.
-          ...(richText ? {} : { bold: false, italic: false, strike: false }),
+          // Plain mode has no marks or lists: typed markers stay literal characters.
+          ...(richText
+            ? {}
+            : {
+                bold: false,
+                italic: false,
+                strike: false,
+                bulletList: false,
+                listItem: false,
+                orderedList: false,
+              }),
         }),
         ComposerUndoGroupingExtension,
         ComposerMentionExtension,
@@ -837,6 +938,8 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         ...(richText
           ? [
               ComposerCodeExtension,
+              ComposerListAttributesExtension,
+              ComposerListInputRulesExtension,
               TaskList,
               ComposerTaskItemExtension.extend({
                 addInputRules() {
@@ -872,6 +975,9 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
         { styling: richText },
       ),
       editable: !disabled,
+      // dir="auto" on every block, so each line lays out in its own script's
+      // direction (Arabic and Hebrew lines align right, code stays left).
+      textDirection: "auto",
       editorProps: {
         attributes: editorAttributes,
         handleKeyDown: (view, event) => {
@@ -985,8 +1091,8 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
           const handler = onCommandKeyDownRef.current;
           if (event.key === "Enter") {
             const instance = editorHolder.current;
-            const isTaskItem = richText && (instance?.isActive("taskItem") ?? false);
-            const handled = handler?.("Enter", event, isTaskItem) ?? false;
+            const listItemType = richText ? activeListItemType(view.state) : null;
+            const handled = handler?.("Enter", event, listItemType !== null) ?? false;
             if (handled) {
               event.preventDefault();
               event.stopPropagation();
@@ -994,11 +1100,14 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
             }
             event.preventDefault();
             if (
-              isTaskItem &&
+              listItemType &&
               instance &&
-              (instance.commands.splitListItem("taskItem", { checked: false }) ||
+              (instance.commands.splitListItem(
+                listItemType,
+                listItemType === "taskItem" ? { checked: false } : {},
+              ) ||
                 (view.state.selection.$from.parent.content.size === 0 &&
-                  instance.commands.liftListItem("taskItem")))
+                  instance.commands.liftListItem(listItemType)))
             ) {
               return true;
             }
@@ -1329,10 +1438,13 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
       const { doc, schema } = editor.state;
       const slice = doc.slice(from, to);
       const first = slice.content.firstChild;
+      // Items copied out of a list keep that list (bullet, number, checkbox).
+      const $from = doc.resolve(from);
+      const container = $from.node($from.depth - slice.openStart);
       const content = first?.isInline
         ? schema.nodes.paragraph!.create(null, slice.content)
-        : first?.type.name === "taskItem"
-          ? schema.nodes.taskList!.create(null, slice.content)
+        : first?.type.name === "taskItem" || first?.type.name === "listItem"
+          ? container.type.create(container.attrs, slice.content)
           : slice.content;
       const text = serializeEditorDoc(doc.type.create(null, content)).value;
       const contextIds = Array.from(new Set(collectInlineContextIds(text)));

@@ -817,7 +817,8 @@ function readInitialWordWrapSetting(): boolean {
 function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
-  const [expanded, setExpanded] = useState(readInitialWordWrapSetting);
+  // Cells wrap by default so tables read in full; collapsing truncates them.
+  const [expanded, setExpanded] = useState(true);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandLabel = expanded ? "Collapse table cells" : "Expand table cells";
@@ -890,7 +891,7 @@ function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
       data-expanded={expanded ? "true" : "false"}
     >
       <ScrollArea radius="none" chainVerticalScroll scrollFade className="w-full max-w-full">
-        <table ref={tableRef} {...props}>
+        <table ref={tableRef} dir="auto" {...props}>
           {children}
         </table>
       </ScrollArea>
@@ -1130,7 +1131,7 @@ function MarkdownCodeBlock({
 
   if (diagram) {
     return (
-      <div className="my-[0.65rem]" data-language={language}>
+      <div className="my-[0.9em]" dir="ltr" data-language={language}>
         {children}
         <div className="mt-0.5 flex items-center justify-between select-none">
           {leadingActions}
@@ -1142,11 +1143,12 @@ function MarkdownCodeBlock({
 
   return (
     <div
-      className="chat-markdown-codeblock my-[0.65rem] overflow-hidden rounded-lg border border-border/70 bg-secondary leading-snug dark:border-transparent dark:bg-input/32"
+      className="chat-markdown-codeblock my-[0.9em] overflow-hidden rounded-xl border border-border/70 bg-secondary leading-snug dark:border-transparent dark:bg-input/32"
+      dir="ltr"
       data-language={language}
       data-wrap={wrapped ? "true" : "false"}
     >
-      <div className="chat-markdown-codeblock-header flex items-center justify-between gap-2 pt-1.5 pr-1.5 pb-0 pl-3 select-none">
+      <div className="chat-markdown-codeblock-header flex items-center justify-between gap-2 border-b border-border/60 py-1 pr-1.5 pl-3 select-none">
         <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-2xs">
           <MarkdownCodeBlockTitleContent
             fenceTitle={fenceTitle}
@@ -2996,6 +2998,7 @@ function markdownHeadingRenderer(level: 1 | 2 | 3 | 4 | 5 | 6) {
     const { headingLevelOffset } = use(ChatMarkdownRendererContext);
     return (
       <Tag
+        dir="auto"
         {...props}
         aria-level={headingLevelOffset > 0 ? Math.min(level + headingLevelOffset, 6) : undefined}
       />
@@ -3023,7 +3026,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
   },
   p: function MarkdownParagraph({ node: _node, children, ...props }) {
     const { skills } = use(ChatMarkdownRendererContext);
-    return <p {...props}>{renderSkillInlineMarkdownChildren(children, skills)}</p>;
+    return (
+      <p dir="auto" {...props}>
+        {renderSkillInlineMarkdownChildren(children, skills)}
+      </p>
+    );
   },
   blockquote: function MarkdownBlockquote({ node: _node, children, ...props }) {
     const alert =
@@ -3034,7 +3041,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     // Not a <blockquote>: the stylesheet mutes those, and an alert's body is ordinary
     // text under a colored title — which is how the host renders it.
     return (
-      <div role="note" className={cn("my-1 border-l-2 pl-3", alert.borderClassName)}>
+      <div role="note" className={cn("my-1 border-s-2 ps-3", alert.borderClassName)}>
         <p className={cn("flex items-center gap-1.5 font-medium", alert.titleClassName)}>
           <alert.Icon aria-hidden className="size-3.5 shrink-0" />
           {alert.label}
@@ -3058,7 +3065,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     const markerOffset =
       typeof listItemStart === "number" ? findTaskListMarkerOffset(text, listItemStart) : null;
     return (
-      <li {...props} data-task-marker-offset={markerOffset ?? undefined}>
+      <li dir="auto" {...props} data-task-marker-offset={markerOffset ?? undefined}>
         {renderSkillInlineMarkdownChildren(children, skills)}
       </li>
     );
@@ -3612,7 +3619,7 @@ function ChatMarkdown({
     <div
       ref={markdownRef}
       className={cn(
-        "chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/[calc(80%+var(--appearance-contrast-boost)/5)] [overflow-wrap:anywhere] [word-break:break-word]",
+        "chat-markdown w-full min-w-0 text-sm text-foreground/[calc(80%+var(--appearance-contrast-boost)/5)] [overflow-wrap:anywhere] [word-break:break-word]",
         className,
       )}
       // Gates the fade-in for blocks that arrive while the response streams.

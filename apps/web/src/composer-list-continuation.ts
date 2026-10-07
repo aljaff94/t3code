@@ -6,8 +6,9 @@ import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
  * Implemented once at the ChatComposer level (store replacement), so both
  * composer modes behave identically and serialize identically:
  * Shift+Enter on a list item continues it, Enter on an empty item exits the
- * list, and Tab indents the item. Plain Markdown markers only — no real list
- * nodes anywhere.
+ * list, and Tab indents the item. Rich text mode renders list lines as real
+ * list nodes and splits them natively on Enter; Tab still lands here, and the
+ * document rebuilds from the indented Markdown.
  */
 
 export interface ComposerListEdit {
