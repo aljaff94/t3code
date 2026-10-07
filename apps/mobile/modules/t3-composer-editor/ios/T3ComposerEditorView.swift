@@ -848,6 +848,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     let previousSelection = sourceSelection()
     isApplyingControlledValue = true
     textView.attributedText = makeAttributedDocument()
+    applyContentDirection()
     let targetSelection = requestedSelection ?? previousSelection
     requestedSelection = nil
     textView.selectedRange = displayRange(for: targetSelection)
@@ -1125,6 +1126,56 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     setNeedsLayout()
   }
 
+  /// Lays out each line in its own script's direction, like web's `textDirection: "auto"`.
+  /// UIKit's natural alignment follows the app's language rather than the text, so an
+  /// Arabic line would otherwise sit on the left in an English app.
+  private func applyContentDirection() {
+    guard textView.markedTextRange == nil else {
+      return
+    }
+    let storage = textView.textStorage
+    let string = storage.string as NSString
+    let naturalIsLeftToRight =
+      NSParagraphStyle.defaultWritingDirection(forLanguage: nil) == .leftToRight
+    storage.beginEditing()
+    string.enumerateSubstrings(
+      in: NSRange(location: 0, length: string.length),
+      options: [.byParagraphs, .substringNotRequired]
+    ) { _, paragraphRange, enclosingRange, _ in
+      guard enclosingRange.length > 0 else {
+        return
+      }
+      var direction = Self.contentDirection(of: string.substring(with: paragraphRange))
+      if direction == .leftToRight && naturalIsLeftToRight {
+        direction = .natural
+      }
+      storage.enumerateAttribute(.paragraphStyle, in: enclosingRange) { value, range, _ in
+        let existing = value as? NSParagraphStyle
+        guard (existing?.baseWritingDirection ?? .natural) != direction else {
+          return
+        }
+        let style = existing?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+        style.baseWritingDirection = direction
+        storage.addAttribute(.paragraphStyle, value: style, range: range)
+      }
+    }
+    storage.endEditing()
+  }
+
+  /// The direction of the first letter, the way HTML's `dir="auto"` picks it. Kept in step
+  /// with `textDirection.ts` in the markdown module.
+  private static func contentDirection(of text: String) -> NSWritingDirection {
+    for scalar in text.unicodeScalars where CharacterSet.letters.contains(scalar) {
+      switch scalar.value {
+      case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF, 0x10800...0x10FFF, 0x1E800...0x1EFFF:
+        return .rightToLeft
+      default:
+        return .leftToRight
+      }
+    }
+    return .natural
+  }
+
   private func restoreBaseTypingAttributes() {
     guard textView.markedTextRange == nil else {
       return
@@ -1142,6 +1193,7 @@ public final class T3ComposerEditorView: ExpoView, UITextViewDelegate, UITextDro
     guard !isApplyingControlledValue else {
       return
     }
+    applyContentDirection()
     value = textView.serializedText()
     let selection = sourceSelection()
     nativeEventCount += 1
